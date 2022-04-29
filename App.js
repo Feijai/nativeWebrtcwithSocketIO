@@ -5,7 +5,6 @@ import {
   View,
   Pressable,
   StyleSheet,
-  YellowBox,
 } from 'react-native';
 import {
   mediaDevices,
@@ -19,12 +18,7 @@ import {button, container, rtcView, text} from './src/styles';
 import log from './src/debug/log';
 import logError from './src/debug/logError';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
-
-YellowBox.ignoreWarnings([
-  'Setting a timer',
-  'Unrecognized WebSocket connection',
-  'ListView is deprecated and will be removed',
-]);
+import CallActionBox from './src/component/CallActionBox';
 
 const url = 'https://8658-152-101-20-97.jp.ngrok.io';
 const socket = io.connect(url, {transports: ['websocket']});
@@ -42,8 +36,8 @@ class App extends Component {
     isFront: true,
     streamURL: null,
     remoteList: {},
-    audio: true,
-    video: true,
+    audio: false,
+    video: false,
   };
 
   componentDidMount() {
@@ -68,6 +62,7 @@ class App extends Component {
 
   handleStreamVideo = () => {
     this.setState({
+      ...this.state,
       video: !this.state.video,
     });
     localStream.getVideoTracks().forEach(item => {
@@ -92,13 +87,15 @@ class App extends Component {
 
   audioButton = (func, state) => {
     return (
-      <Pressable style={styles.iconButton} onPress={func}>
-        <Icon
-          name={state.video ? 'camera-off' : 'camera'}
-          size={30}
-          color={'white'}
-        />
-      </Pressable>
+      <View style={styles.buttonsContainer}>
+        <Pressable style={styles.iconButton} onPress={func}>
+          <Icon
+            name={state.video ? 'camera-off' : 'camera'}
+            size={30}
+            color={'white'}
+          />
+        </Pressable>
+      </View>
     );
   };
 
@@ -111,13 +108,6 @@ class App extends Component {
 
         {status === 'ready' ? this.button(this.onPress, 'Enter room') : null}
 
-        {this.button(this.switchCamera, 'Change Camera')}
-        {/* {this.button(
-          this.handleStreamVideo,
-          this.state.video ? 'Stop Camera' : 'Start Camera',
-        )} */}
-        {/* {this.audioButton(this.handleStreamVideo, this.state)} */}
-
         {mapHash(remoteList, (remote, index) => {
           return (
             <RTCView key={index} streamURL={remote} style={rtcView.style} />
@@ -125,6 +115,13 @@ class App extends Component {
         })}
 
         <RTCView streamURL={streamURL} style={rtcView.style} />
+        <CallActionBox
+          state={this.state}
+          switchCamera={this.switchCamera}
+          handleStreamVideo={this.handleStreamVideo}
+          handleStreamAudio={this.handleStreamAudio}
+          // onHangupPress={''}
+        />
       </View>
     );
   }
@@ -370,23 +367,5 @@ const getStats = () => {
     pc.getStats(track, callback, logError);
   }
 };
-
-const styles = StyleSheet.create({
-  buttonsContainer: {
-    backgroundColor: '#333333',
-    padding: 20,
-    paddingBottom: 40,
-    borderTopLeftRadius: 15,
-    borderTopRightRadius: 15,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 'auto',
-  },
-  iconButton: {
-    backgroundColor: '#4a4a4a',
-    padding: 15,
-    borderRadius: 50,
-  },
-});
 
 export default App;
