@@ -1,0 +1,32 @@
+{
+  "name": "nativeWebrtcwithSocketIO",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "android": "react-native run-android",
+    "ios": "react-native run-ios",
+    "start": "react-native start",
+    "test": "jest",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "react": "17.0.2",
+    "react-native": "0.68.1",
+    "react-native-vector-icons": "^9.1.0",
+    "react-native-webrtc": "^1.100.0",
+    "socket.io-client": "^2.3.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.17.9",
+    "@babel/runtime": "^7.17.9",
+    "@react-native-community/eslint-config": "^3.0.1",
+    "babel-jest": "^28.0.2",
+    "eslint": "^8.14.0",
+    "jest": "^28.0.2",
+    "metro-react-native-babel-preset": "^0.70.2",
+    "react-test-renderer": "17.0.2"
+  },
+  "jest": {
+    "preset": "react-native"
+  }
+}
