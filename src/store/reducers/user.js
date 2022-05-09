@@ -5,11 +5,11 @@ const initState = {
 
 export default function getUserIdReducer(preState = initState, action) {
   const {type, data} = action;
-  console.log('data==', data);
+  // console.log('===user data==', data);
   switch (type) {
     case SET_USER_ID:
       return {
-        userId: data.userId,
+        userId: data,
       };
 
     default:

@@ -1,587 +1,363 @@
-import React, {useEffect, useState} from 'react';
+import React, {Component, useEffect, useState} from 'react';
 import {
-  View,
-  StyleSheet,
-  FlatList,
-  Animated,
+  Text,
   TouchableOpacity,
-  TouchableWithoutFeedback,
-  Dimensions,
-  Image,
+  View,
+  Pressable,
+  StyleSheet,
 } from 'react-native';
-import {Text, Button, TextInput} from 'react-native-paper';
-import InCallManager from 'react-native-incall-manager';
-import {connect} from 'react-redux';
 import {
-  RTCPeerConnection,
+  mediaDevices,
   RTCIceCandidate,
+  RTCPeerConnection,
   RTCSessionDescription,
+  RTCView,
 } from 'react-native-webrtc';
-import {useNavigation} from '@react-navigation/native';
+import io from 'socket.io-client';
+import {button, container, rtcView, text} from '../styles';
+import log from '../debug/log';
+import logError from '../debug/logError';
+import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import CallActionBox from '../component/CallActionBox';
+import {
+  changeRemoteListAction,
+  createGetMediaAction,
+  createSetLocalStreamAction,
+} from '../store/actions/call';
+import {connect, useSelector} from 'react-redux';
+import {
+  SET_SOCKET_ACTIVE,
+  GET_MEDIA,
+  SET_SHOW_SHEET,
+  CHANGE_REMOTE_LIST,
+  SET_ROOM_ID,
+  CHANGE_ROOM_LIST,
+  SET_LOCAL_STREAM,
+} from '../store/constant';
+import store from '../store';
+
+const url = 'https://919a-152-101-20-97.jp.ngrok.io';
+const socket = io.connect(url, {transports: ['websocket']});
+const configuration = {iceServers: [{urls: 'stun:stun.l.google.com:19302'}]};
+
 let pcPeers = {};
-let myStream = {};
-let fall = new Animated.Value(0);
-function CallScreen({
-  dispatch,
-  userId,
-  socketActive,
-  calling,
-  localStream,
-  socket,
-  roomID,
-  roomList,
-  remoteList,
-  showSheet,
-}) {
-  const navigation = useNavigation();
-  const {width, height} = Dimensions.get('window');
-  const [friends, setFriends] = useState([]);
-  const [enbled, setEnbled] = useState(false);
-  function setAudioEnbled(mymuted) {
-    myStream.getTracks().forEach(t => {
-      debugger;
-      if (t.kind === 'audio') t.enabled = mymuted;
-    });
-    setEnbled(mymuted);
-  }
-  //change the config as you need
-  useEffect(() => {
-    navigation.setOptions({
-      title: 'Your ID - ' + userId,
-      headerRight: () => (
-        <Button
-          mode="text"
-          onPress={() => {
-            navigation.push('LoginScreen');
-          }}
-          style={{paddingRight: 10}}>
-          Logout
-        </Button>
-      ),
-    });
-  }, []);
-  useEffect(() => {
-    if (socket.connected) {
-      try {
-        InCallManager.start({media: 'audio'});
-        InCallManager.setForceSpeakerphoneOn(true);
-        InCallManager.setSpeakerphoneOn(true);
-      } catch (err) {
-        console.log('InApp Caller ---------------------->', err);
-      }
-      console.log('===InCallManager===', InCallManager);
-      socket.emit('login', userId);
-    }
-  }, [socket.connected]);
-  useEffect(() => {
-    if (roomList.length && roomID) {
-      const currentRoom = roomList.find(item => item[0] == roomID);
-      console.log('currentRoom====================================');
-      console.log(currentRoom);
-      console.log('====================================');
-      // return currentRoom[1].participant;
-      if (currentRoom) {
-        setFriends(currentRoom[1].participant);
-      }
-    }
-  }, [roomList, roomID]);
+let appClass;
+let localStream;
 
-  useEffect(() => {
-    let timer = null;
-    socket.on('connect', () => {
-      dispatch({type: 'call/setSocketActive', payload: true});
-      timer = setInterval(() => {
-        socket.emit('list-server', {}, data => {
-          // console.log('====================================');
-          const entries = Object.entries(data);
-          // console.log('====================================');
-          dispatch({type: 'call/changeRoomList', payload: entries});
+const getLocalStream = () => {
+  let isFront = true;
+
+  mediaDevices.enumerateDevices().then(sourceInfos => {
+    let videoSourceId;
+    for (let i = 0; i < sourceInfos.length; i++) {
+      const sourceInfo = sourceInfos[i];
+      if (
+        sourceInfo.kind == 'videoinput' &&
+        sourceInfo.facing == (isFront ? 'front' : 'environment')
+      ) {
+        videoSourceId = sourceInfo.deviceId;
+      }
+    }
+    mediaDevices
+      .getUserMedia({
+        audio: true,
+        video: {
+          mandatory: {
+            minWidth: 500, // Provide your own width, height and frame rate here
+            minHeight: 300,
+            minFrameRate: 30,
+          },
+          facingMode: isFront ? 'user' : 'environment',
+          optional: videoSourceId ? [{sourceId: videoSourceId}] : [],
+        },
+      })
+      .then(stream => {
+        // Got stream!
+        localStream = stream;
+        appClass.setState({
+          streamURL: stream.toURL(),
+          status: 'ready',
+          info: 'Welcome to WebRTC demo',
         });
-      }, 10000);
+      })
+      .catch(error => {
+        // Log error
+      });
+  });
+};
 
-      socket.on('exchange', data => {
-        exchange(data);
-      });
-      socket.on('leave', socketId => {
-        leave(socketId);
-      });
-      socket.on('disconnect', socketId => {
-        dispatch({type: 'call/setSocketActive', payload: false});
-        dispatch({type: 'call/changeRoomList', payload: []});
-        if (timer) {
-          clearInterval(timer);
-          timer = null;
-        }
-      });
+const join = roomID => {
+  let onJoin = socketIds => {
+    for (const i in socketIds) {
+      if (socketIds.hasOwnProperty(i)) {
+        const socketId = socketIds[i];
+        createPC(socketId, true);
+      }
+    }
+  };
+
+  socket.emit('join', roomID, onJoin);
+};
+
+const createPC = (socketId, isOffer) => {
+  const peer = new RTCPeerConnection(configuration);
+
+  pcPeers = {
+    ...pcPeers,
+    [socketId]: peer,
+  };
+
+  peer.onnegotiationneeded = async () => {
+    if (isOffer) {
+      try {
+        await peer.setLocalDescription(await peer.createOffer());
+        socket.emit('exchange', {
+          to: socketId,
+          sdp: peer.localDescription,
+          type: 'offer',
+        });
+      } catch (err) {
+        console.error(err);
+      }
+    }
+  };
+
+  peer.addStream(localStream);
+
+  peer.onaddstream = event => {
+    const remoteList = appClass.state.remoteList;
+
+    remoteList[socketId] = event.stream.toURL();
+    appClass.setState({
+      info: 'One peer join!',
+      remoteList: remoteList,
     });
-    return () => {
-      if (timer) {
-        clearInterval(timer);
-        timer = null;
-      }
-      if (socket.connected) socket.close(); // close the socket if the view is unmounted
-    };
-  }, []);
-
-  useEffect(() => {
-    dispatch({type: 'call/getMedia'});
-    return () => {
-      ileave();
-    };
-  }, []);
-  myStream = localStream;
-  // console.log('====================================');
-  // console.log();
-  // console.log('localStream====================================');
-  // console.log(localStream);
-  const join = roomData => {
-    let onJoin = socketIds => {
-      for (const i in socketIds) {
-        debugger;
-        if (socketIds.hasOwnProperty(i)) {
-          let socketId = socketIds[i];
-          if (typeof socketId === 'object') {
-            socketId = socketId.socketId;
-          }
-          console.log('====================================');
-          console.log(socketId);
-          console.log('====================================');
-          createPC(socketId, true);
-        }
-      }
-    };
-    dispatch({type: 'call/setShowSheet', payload: true});
-    socket.emit('join', roomData, onJoin);
-  };
-  const createPC = (socketId, isOffer) => {
-    const configuration = {
-      iceServers: [{urls: 'stun:stun.l.google.com:19302'}],
-    };
-    // console.log('localStream===============================');
-    // console.log(localStream);
-    // console.log('====================================');
-    const peer = new RTCPeerConnection(configuration);
-    // console.log('Peer====================================');
-    // console.log(peer);
-    // console.log('====================================');
-    pcPeers = {
-      ...pcPeers,
-      [socketId]: peer,
-    };
-    peer.onnegotiationneeded = async () => {
-      debugger;
-      //console.log('onnegotiationneeded');
-      if (isOffer) {
-        const localDescription = await peer.createOffer();
-        await peer.setLocalDescription(localDescription);
-        socket.emit('exchange', {to: socketId, sdp: peer.localDescription});
-
-        //setAudioMuted(false);
-        // myStream.getTracks().forEach((t) => {
-        //   if (t.kind === 'audio') t.enabled = false;
-        //   setMuted(false);
-        // });
-      }
-    };
-    setAudioEnbled(!isOffer);
-    peer.addStream(myStream);
-    peer.onaddstream = event => {
-      remoteList[socketId] = event.stream.toURL();
-      dispatch({type: 'call/changeRemoteList', payload: remoteList});
-    };
-    peer.onicecandidate = event => {
-      //console.log('onicecandidate', event.candidate);
-      if (event.candidate) {
-        socket.emit('exchange', {to: socketId, candidate: event.candidate});
-      }
-    };
-    peer.oniceconnectionstatechange = event => {
-      //console.log('oniceconnectionstatechange', event.target.iceConnectionState);
-      if (event.target.iceConnectionState === 'completed') {
-        //console.log('event.target.iceConnectionState === 'completed'');
-        setTimeout(() => {
-          getStats();
-        }, 1000);
-      }
-      if (event.target.iceConnectionState === 'connected') {
-        //console.log('event.target.iceConnectionState === 'connected'');
-      }
-      if (event.target.iceConnectionState === 'disconnected') {
-        console.log('event.target.iceConnectionState === disconnected');
-      }
-    };
-    peer.onsignalingstatechange = event => {
-      //console.log('on signaling state change', event.target.signalingState);
-    };
-    peer.onremovestream = event => {
-      debugger;
-      //console.log('on remove stream', event.stream);
-    };
-
-    return peer;
   };
 
-  const exchange = async data => {
-    debugger;
-    let fromId = data.from;
-    if (data.sdp) {
-      console.log('Exchange====================================');
-      console.log(data);
-      console.log('====================================');
-    }
-    let peer;
-    debugger;
-    if (fromId in pcPeers) {
-      peer = pcPeers[fromId];
-    } else {
-      peer = createPC(fromId, false);
-    }
-    if (data.sdp) {
-      await peer.setRemoteDescription(new RTCSessionDescription(data.sdp));
-      const answer = await peer.createAnswer();
-      await peer.setLocalDescription(answer);
-      socket.emit('exchange', {to: fromId, sdp: peer.localDescription});
-    } else {
-      peer.addIceCandidate(new RTCIceCandidate(data.candidate));
+  peer.onicecandidate = event => {
+    if (event.candidate) {
+      socket.emit('exchange', {to: socketId, candidate: event.candidate});
     }
   };
 
-  const leave = socketId => {
-    //console.log('leave', socketId);
-    const peer = pcPeers[socketId];
-    peer.close();
-
-    // delete pcPeers[socketId];
-    const remoteList = remoteList;
-    // delete remoteList[socketId];
-    // appClass.setState({
-    //   info: 'One peer left!',
-    //   remoteList: remoteList,
-    // });
+  peer.oniceconnectionstatechange = event => {
+    //console.log('oniceconnectionstatechange', event.target.iceConnectionState);
+    if (event.target.iceConnectionState === 'completed') {
+      //console.log('event.target.iceConnectionState === 'completed'');
+      setTimeout(() => {
+        getStats();
+      }, 1000);
+    }
+    if (event.target.iceConnectionState === 'connected') {
+      //console.log('event.target.iceConnectionState === 'connected'');
+    }
   };
-  function ileave() {
-    debugger;
 
-    const keys = Object.keys(pcPeers);
-    keys.forEach(key => {
-      const pc = pcPeers[key];
-      debugger;
-      pc.close();
-    });
-    // socket.disconnect();
-    socket.emit('leave');
-    pcPeers = {};
-    dispatch({type: 'call/changeRemoteList', payload: []});
+  peer.onsignalingstatechange = event => {
+    //console.log('on signaling state change', event.target.signalingState);
+  };
+
+  peer.onremovestream = event => {
+    //console.log('on remove stream', event.stream);
+  };
+
+  return peer;
+};
+
+socket.on('exchange', data => {
+  exchange(data);
+});
+socket.on('leave', socketId => {
+  leave(socketId);
+});
+
+const exchange = async data => {
+  let fromId = data.from;
+
+  let peer;
+  if (fromId in pcPeers) {
+    peer = pcPeers[fromId];
+  } else {
+    peer = createPC(fromId, false);
   }
 
-  const mapHash = (hash, func) => {
-    //console.log(hash);
-    const array = [];
-    for (const key in hash) {
-      if (hash.hasOwnProperty(key)) {
-        const obj = hash[key];
-        array.push(func(obj, key));
-      }
+  if (data.sdp) {
+    let sdp = new RTCSessionDescription(data.sdp);
+
+    if (data.type == 'offer') {
+      await peer.setRemoteDescription(sdp);
+      await peer.setLocalDescription(await peer.createAnswer());
+      socket.emit('exchange', {
+        to: fromId,
+        sdp: peer.localDescription,
+        type: 'answer',
+      });
+    } else if (data.type == 'answer') {
+      await peer.setRemoteDescription(sdp);
     }
-    return array;
+  } else {
+    peer.addIceCandidate(new RTCIceCandidate(data.candidate));
+  }
+};
+
+const leave = socketId => {
+  const peer = pcPeers[socketId];
+
+  peer.close();
+
+  delete pcPeers[socketId];
+
+  const remoteList = appClass.state.remoteList;
+
+  delete remoteList[socketId];
+
+  appClass.setState({
+    info: 'One peer left!',
+    remoteList: remoteList,
+  });
+};
+
+const mapHash = (hash, func) => {
+  const array = [];
+  for (const key in hash) {
+    if (hash.hasOwnProperty(key)) {
+      const obj = hash[key];
+      array.push(func(obj, key));
+    }
+  }
+  return array;
+};
+
+const getStats = () => {
+  const pc = pcPeers[Object.keys(pcPeers)[0]];
+  if (
+    pc.getRemoteStreams()[0] &&
+    pc.getRemoteStreams()[0].getAudioTracks()[0]
+  ) {
+    const track = pc.getRemoteStreams()[0].getAudioTracks()[0];
+    let callback = report => console.log('getStats report', report);
+
+    pc.getStats(track, callback, logError);
+  }
+};
+
+class CallScreen extends Component {
+  constructor(props) {
+    super(props);
+  }
+  state = {
+    info: 'Initializing',
+    status: 'init',
+    roomID: 'myroom',
+    isFront: true,
+    streamURL: null,
+    remoteList: {},
+    audio: false,
+    video: false,
   };
 
-  const getStats = () => {
-    const pc = pcPeers[Object.keys(pcPeers)[0]];
-    if (
-      pc.getRemoteStreams()[0] &&
-      pc.getRemoteStreams()[0].getAudioTracks()[0]
-    ) {
-      const track = pc.getRemoteStreams()[0].getAudioTracks()[0];
-      let callback = report => console.log('getStats report', report);
-      //console.log('track', track);
-      pc.getStats(track, callback);
-    }
+  componentDidMount() {
+    appClass = this;
+    getLocalStream();
+  }
+
+  switchCamera = () => {
+    localStream.getVideoTracks().forEach(track => {
+      track._switchCamera();
+    });
   };
-  return (
-    <View style={styles.root}>
-      {!showSheet && (
-        <View style={styles.inputField}>
-          <TextInput
-            label="Enter ROOM Id"
-            mode="outlined"
-            style={{marginBottom: 7}}
-            onChangeText={text =>
-              dispatch({type: 'call/setRoomID', payload: text})
-            }
-          />
-          <Button
-            mode="contained"
-            onPress={() => {
-              join({roomID, displayName: userId});
-              // dispatch({ type: 'call/callSomeOne', payload: {} })
-            }}
-            loading={calling}
-            contentStyle={styles.btnContent}
-            disabled={!(socket.connected && userId.length > 0)}>
-            CREATE A ROOM
-          </Button>
-        </View>
-      )}
 
-      {!showSheet && (
-        <FlatList
-          data={roomList}
-          renderItem={({item}) => {
-            if (!item[0]) {
-              return null;
-            }
-            console.log('room ====================================');
-            console.log(item[1]);
-            console.log('====================================');
-            return (
-              <View style={styles.renderitem}>
-                <View
-                  style={{
-                    marginLeft: 15,
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    marginTop: 10,
-                  }}>
-                  <Text>roomID:</Text>
-                  <Text style={styles.nutrition}>{item[0]}</Text>
-                </View>
-                <View
-                  style={{
-                    flexDirection: 'row',
-                    justifyContent: 'space-between',
-                  }}>
-                  <View
-                    style={{
-                      flexDirection: 'row',
-                      marginLeft: 15,
-                      alignItems: 'center',
-                    }}>
-                    <Text>founder:</Text>
-                    <Text style={styles.nutrition}>{item[1]['name']}</Text>
-                  </View>
-                  <View
-                    style={{
-                      flexDirection: 'row',
-                      marginLeft: 15,
-                      alignItems: 'center',
-                    }}>
-                    <Text>Current online:</Text>
-                    <Text style={styles.nutrition}>
-                      {item[1]['participant'].length}
-                    </Text>
-                  </View>
-                  <Button
-                    mode="contained"
-                    onPress={() => {
-                      dispatch({type: 'call/setRoomID', payload: item[0]});
-                      join({roomID: item[0], displayName: userId});
-                      // dispatch({ type: 'call/callSomeOne', payload: {} })
-                    }}
-                    loading={calling}
-                    style={{marginRight: 10, marginBottom: 10}}
-                    contentStyle={{fontSize: 15}}
-                    disabled={!(socket.connected && userId.length > 0)}>
-                    JOIN
-                  </Button>
-                </View>
-              </View>
-            );
-          }}
-          keyExtractor={({item}, index) => `list${index}`}
-        />
-      )}
-      {showSheet && (
-        <Animated.View
-          style={{
-            width: width,
-            height: height,
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
+  handleStreamAudio = () => {
+    this.setState({
+      audio: !this.state.audio,
+    });
+    localStream.getAudioTracks().forEach(item => {
+      item.enabled = this.state.audio;
+    });
+  };
 
-            backgroundColor: 'black',
-            opacity: Animated.add(1, Animated.multiply(-1.0, fall)),
-          }}>
-          <TouchableOpacity
-            onPress={() => {
-              debugger;
+  handleStreamVideo = () => {
+    this.setState({
+      ...this.state,
+      video: !this.state.video,
+    });
+    localStream.getVideoTracks().forEach(item => {
+      item.enabled = this.state.video;
+    });
+  };
 
-              ileave();
-              dispatch({type: 'call/setShowSheet', payload: false});
-            }}
-            style={{
-              width: 50,
-              height: 50,
-              position: 'absolute',
-              right: 10,
-            }}>
-            <Image
-              style={{
-                width: 50,
-                height: 50,
-              }}
-              source={''}></Image>
-          </TouchableOpacity>
+  onPress = () => {
+    this.setState({
+      status: 'connect',
+      info: 'Connecting',
+    });
 
-          <TouchableOpacity
-            onPress={() => {
-              debugger;
-              setAudioEnbled(!enbled);
-            }}
-            style={{
-              width: 50,
-              height: 50,
-              position: 'absolute',
-              right: 10,
-              top: 100,
-            }}>
-            <Image
-              style={{
-                width: 50,
-                height: 50,
-                resizeMode: 'contain',
-              }}
-              source={''}></Image>
-          </TouchableOpacity>
+    join(this.state.roomID);
+  };
 
-          <View style={{marginTop: 40, marginLeft: 15, marginTop: 150}}>
-            <Text style={{color: 'white', fontSize: 20}}>
-              {`You are in a chat room called: `}
-            </Text>
-            <Text style={{color: 'red', fontSize: 20}}>{roomID}</Text>
-            <Text style={{color: 'white', fontSize: 20}}>{`onlines: `}</Text>
-            <FlatList
-              data={friends}
-              renderItem={({item}) => {
-                return (
-                  <View style={{paddingHorizontal: 15}}>
-                    <View
-                      style={{
-                        flexDirection: 'row',
-                        borderBottomWidth: 0.2,
-                        borderBottomColor: 'gray',
-                      }}>
-                      <Image
-                        style={{
-                          width: 44,
-                          height: 44,
-                          resizeMode: 'contain',
-                          margin: 5,
-                        }}
-                        source={{
-                          uri: 'https://measure.3vyd.com/uPic/uuuuuuuno.png',
-                        }}></Image>
-                      <View
-                        style={{
-                          marginTop: 15,
-                          marginLeft: 15,
-                          alignItems: 'center',
-                        }}>
-                        <Text
-                          style={[
-                            styles.balanceTxt,
-                            {color: 'white', fontSize: 14},
-                          ]}>
-                          {item.displayName}
-                        </Text>
-                      </View>
-                    </View>
-                  </View>
-                );
-              }}
-              keyExtractor={({item}, index) => `list${index}`}
-            />
-          </View>
-        </Animated.View>
-      )}
-    </View>
+  button = (func, text) => (
+    <TouchableOpacity style={button.container} onPress={func}>
+      <Text style={button.style}>{text}</Text>
+    </TouchableOpacity>
   );
+
+  audioButton = (func, state) => {
+    return (
+      <View style={styles.buttonsContainer}>
+        <Pressable style={styles.iconButton} onPress={func}>
+          <Icon
+            name={state.video ? 'camera-off' : 'camera'}
+            size={30}
+            color={'white'}
+          />
+        </Pressable>
+      </View>
+    );
+  };
+
+  render() {
+    const {status, info, streamURL, remoteList} = this.state;
+
+    return (
+      <View style={container.style}>
+        <Text style={text.style}>{info}</Text>
+
+        {status === 'ready' ? this.button(this.onPress, 'Enter room') : null}
+
+        {mapHash(remoteList, (remote, index) => {
+          return (
+            <RTCView key={index} streamURL={remote} style={rtcView.style} />
+          );
+        })}
+
+        <RTCView streamURL={streamURL} style={rtcView.style} />
+        <CallActionBox
+          state={this.state}
+          switchCamera={this.switchCamera}
+          handleStreamVideo={this.handleStreamVideo}
+          handleStreamAudio={this.handleStreamAudio}
+          // onHangupPress={''}
+        />
+      </View>
+    );
+  }
 }
-// const mapStateToProps = ({
-//   user: {userId},
-//   call: {
-//     roomID,
-//     remoteList,
-//     socketActive,
-//     calling,
-//     localStream,
-//     socket,
-//     yourConn,
-//     roomList,
-//     showSheet,
-//   },
-// }) => ({
-//   userId,
-//   socketActive,
-//   calling,
-//   localStream,
-//   socket,
-//   yourConn,
-//   remoteList,
-//   roomID,
-//   roomList,
-//   showSheet,
-// });
 
-// export default connect(mapStateToProps)(CallScreen);
-export default CallScreen;
-
-const styles = StyleSheet.create({
-  renderitem: {
-    backgroundColor: 'white',
-    width: '100%',
-    height: 70,
-    flexDirection: 'column',
-    justifyContent: 'center',
-    marginTop: 15,
-    borderRadius: 16,
-    borderColor: 'lightgray',
-    borderWidth: 1,
-  },
-  value: {fontSize: 20},
-  nutrition: {
-    fontSize: 18,
-    color: '#3BC054',
-  },
-  root: {
-    backgroundColor: '#fff',
-    flex: 1,
-    padding: 20,
-  },
-  inputField: {
-    marginBottom: 10,
-    flexDirection: 'column',
-  },
-  videoContainer: {
-    flex: 1,
-    minHeight: 450,
-  },
-  videos: {
-    width: '100%',
-    flex: 1,
-    position: 'relative',
-    overflow: 'hidden',
-
-    borderRadius: 6,
-  },
-  localVideos: {
-    height: 100,
-    marginBottom: 10,
-  },
-  remoteVideos: {
-    height: 400,
-  },
-  localVideo: {
-    backgroundColor: '#f2f2f2',
-    height: '100%',
-    width: '100%',
-  },
-  remoteVideo: {
-    backgroundColor: '#f2f2f2',
-    height: '100%',
-    width: '100%',
-  },
+const mapStateToProps = state => ({
+  userId: state.userId.userId,
+  socketActive: state.socketState.socketActive,
+  calling: state.socketState.calling,
+  // localStream: state.socketState.localStream,
+  socket: state.socketState.socket,
+  // yourConn: state.socketState.yourConn,
+  // remoteList: state.socketState.remoteList,
+  roomID: state.socketState.roomID,
+  roomList: state.socketState.roomList,
+  showSheet: state.socketState.showSheet,
+  pcPeers: state.socketState.pcPeers,
 });
+
+export default connect(mapStateToProps, {
+  getMedia: createGetMediaAction,
+  getRemote: changeRemoteListAction,
+})(CallScreen);

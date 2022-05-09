@@ -5,6 +5,7 @@ import CallScreen from './src/screens/CallScreen';
 import {Provider} from 'react-redux';
 import LoginScreen from './src/screens/LoginScreen';
 import store from './src/store/index';
+
 const Stack = createStackNavigator();
 
 const StackNavigation = () => {
@@ -13,7 +14,7 @@ const StackNavigation = () => {
       <NavigationContainer>
         <Stack.Navigator>
           <Stack.Screen name="LoginScreen" component={LoginScreen} />
-          {/* <Stack.Screen name="CallScreen" component={CallScreen} /> */}
+          <Stack.Screen name="CallScreen" component={CallScreen} />
         </Stack.Navigator>
       </NavigationContainer>
     </Provider>

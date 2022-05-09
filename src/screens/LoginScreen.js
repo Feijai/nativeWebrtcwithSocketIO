@@ -6,6 +6,8 @@ import {createSetUserIdAction} from '../store/actions/user';
 
 function LoginScreen(props) {
   // const {userId} = props;
+  // console.log(props);
+
   const [userId, setUserId] = useState('');
   return (
     <View style={styles.root}>
@@ -19,7 +21,10 @@ function LoginScreen(props) {
         />
         <Button
           mode="contained"
-          onPress={() => props.getLoginUserId(userId)}
+          onPress={() => {
+            props.getLoginUserId(userId);
+            props.navigation.navigate('CallScreen');
+          }}
           style={styles.btn}
           contentStyle={styles.btnContent}
           disabled={userId?.length === 0}>
